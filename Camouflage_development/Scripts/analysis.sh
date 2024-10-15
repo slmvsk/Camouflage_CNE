@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --job-name=development1
 #SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=o.fernandez@oist.jp
+#SBATCH --mail-user=t.salamovska@oist.jp
 
 
 # create a temporary directory for this job and save the name

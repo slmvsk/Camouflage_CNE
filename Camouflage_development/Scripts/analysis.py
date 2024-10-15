@@ -9,128 +9,147 @@ import os
 
 
 def convert_seconds(seconds):
+    # Convert total seconds into hours, minutes, and seconds format (HH:MM:SS)
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
     seconds = int(seconds % 60)
 
-
+    # Return the time in HH:MM:SS format
     return f"{hours:02}:{minutes:02}:{seconds:02}"
-            
-            
+
 def find_boundaries(video, step, fps=23, logpath=None):
-    
-    time_points = list()
-    step_frame = step * fps
-    
-    frame = 1
-    cap = cv2.VideoCapture(video)
-    number_of_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    # This function calculates time boundaries in a video based on step size and frame rate (fps)
+
+    time_points = list()  # To store time points
+    step_frame = step * fps  # Calculate number of frames for each step (step in seconds * fps)
+
+    frame = 1  # Initialize starting frame
+    cap = cv2.VideoCapture(video)  # Capture video from file
+    number_of_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # Get total number of frames
     if number_of_frames == 0:
+        # If no frames are detected, try reading the video file with .avi extension
         cap.release()
         new_video = video.split('.')[0] + '.avi'
         cap = cv2.VideoCapture(new_video)
-        number_of_frames = int(cv2.CAP_PROP_FRAME_COUNT)
+        number_of_frames = int(cv2.CAP_PROP_FRAME_COUNT)  # Get total number of frames from the new video
 
-    print('!!!!!!!!', number_of_frames)
+    print('!!!!!!!!', number_of_frames)  # Debugging message for frame count
+    # Log number of frames
     joblog = open(logpath, 'a')
     joblog.write(str(datetime.datetime.now()) + 'video contains {} frames\n'.format(number_of_frames))
     joblog.close()
-    succ, img = cap.read()
-    reds = list()
+
+    succ, img = cap.read()  # Read first frame
+    reds = list()  # Store average pixel intensity for each frame
     while frame < number_of_frames:
         if logpath is not None:
+            # Log progress of frame extraction
             joblog = open(logpath, 'a')
             joblog.write(str(datetime.datetime.now()) + 'getting frame {} \n'.format(frame + step_frame))
             joblog.close()
-        
-        
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
-        time_points.append(frame / fps)
-        
 
+        # Set video to the current frame
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
+        time_points.append(frame / fps)  # Convert frame to time and store
+
+        # Read frame and calculate the average color intensity
         succ, img = cap.read()
         img = np.array(img)
-        reds.append(img[:,:,:].mean())
-        frame += step_frame
+        reds.append(img[:,:,:].mean())  # Append mean of pixel values to reds
+        frame += step_frame  # Increment frame by the step size in frames
             
-    cap.release()    
-    time_points = np.array(time_points)
-    reds = np.array(reds)
-    
-    mean_I = np.mean(reds)
-    
+    cap.release()  # Release video capture
+    time_points = np.array(time_points)  # Convert list to numpy array
+    reds = np.array(reds)  # Convert list to numpy array
+
+    mean_I = np.mean(reds)  # Calculate mean intensity of frames
+
+    # Find boundaries where intensity is below the mean
     b1 = int(time_points[np.where(reds < mean_I)[0][0]])
     b2 = int(time_points[np.where(reds < mean_I)[0][-1]])
-    t1 = convert_seconds(b1)
-    t2 = convert_seconds(b2)
-    t3 = convert_seconds(time_points[-2])
+    t1 = convert_seconds(b1)  # Convert boundary 1 to time format
+    t2 = convert_seconds(b2)  # Convert boundary 2 to time format
+    t3 = convert_seconds(time_points[-2])  # Convert second last time point to time format
     
-    TIMESTAMPS = [("00:00:00", t1), (t2,t3)]
-    
+    TIMESTAMPS = [("00:00:00", t1), (t2,t3)]  # Define time boundaries
+
+    # Log the timestamps
     joblog = open(logpath, 'a')
     joblog.write(str(datetime.datetime.now()) + 'timestamps are {}, {}, {}\n'.format(t1, t2, t3))
     joblog.close()
 
-    return TIMESTAMPS
+    return TIMESTAMPS  # Return calculated timestamps
 
+# Define log path for the job
 logpath = '/work/ReiterU/temp_videos/joblog_enriched.txt'
 joblog = open(logpath, 'w')
 joblog.write(str(datetime.datetime.now()) + ' STARTING FOR ENRICHED CONDITION WOOHOO \n')
 joblog.close()
 
-
+# Define the folder where videos are stored
 FOLDER = '/bucket/ReiterU/Development_project/movies/enriched2/'
 #video = '/bucket/ReiterU/Development_project/movies/enriched/cam3_2023-03-11-08-16-36.avi'
 
-
+# Get list of all video files in the folder with .mp4 extension
 ALL_VIDEOS = os.listdir(FOLDER)
 ALL_VIDEOS = [FOLDER + v for v in ALL_VIDEOS if v.endswith('mp4')]
 
-
+# Loop over each video in the folder
 for video in ALL_VIDEOS:
 
     try:
+        # Log the copying of video
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' copying video {} to temp \n'.format(video))
         joblog.close()
 
-        #new_path = '/work/ReiterU/temp_videos/cam3_2023-04-15-11-41-11.avi'
-        #subprocess.run(['scp', video, new_path])
+        # Uncomment the following lines if necessary to copy the video to temp
+        # new_path = '/work/ReiterU/temp_videos/cam3_2023-04-15-11-41-11.avi'
+        # subprocess.run(['scp', video, new_path])
 
-
-
+        # Log the boundary search process
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' searching for time boundaries... \n')
         joblog.close()
+
+        # Find boundaries in the video
         TIMESTAMPS = find_boundaries(video, step=600, fps=23, logpath=logpath)
         print(TIMESTAMPS)
+
+        # Log that boundaries were found
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' boundaries found !\n')
         joblog.close()
 
-
-
-
-        video_output_names = ['/work/ReiterU/temp_videos/' + video.split('/')[-1].split('.')[0] + '_trim1.MP4', '/work/ReiterU/temp_videos/' + video.split('/')[-1].split('.')[0] + '_trim2.MP4']
+        # Define output file names for the trimmed videos
+        video_output_names = ['/work/ReiterU/temp_videos/' + video.split('/')[-1].split('.')[0] + '_trim1.MP4', 
+                              '/work/ReiterU/temp_videos/' + video.split('/')[-1].split('.')[0] + '_trim2.MP4']
+        # Log trimming process
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' trimming video...\n')
         joblog.write(str(datetime.datetime.now()) + ' videos paths are {} \n and {}\n'.format(video_output_names[0], video_output_names[1]))
         joblog.close()
+
         print(video)
+
+        # Define ffmpeg paths and commands for trimming the video based on found timestamps
         ffmpeg = '/apps/unit/ReiterU/olivier/ffmpeg/ffmpeg/ffmpeg'
-        ffmpeg_command1 = [ffmpeg, '-y', '-i', video, '-ss', TIMESTAMPS[0][0], '-to', TIMESTAMPS[0][1],\
+        ffmpeg_command1 = [ffmpeg, '-y', '-i', video, '-ss', TIMESTAMPS[0][0], '-to', TIMESTAMPS[0][1],
                            '-c', 'copy', '-avoid_negative_ts', 'make_zero', video_output_names[0]]
 
-        ffmpeg_command2 = [ffmpeg, '-y', '-i', video, '-ss', TIMESTAMPS[1][0], '-to', TIMESTAMPS[1][1],\
+        ffmpeg_command2 = [ffmpeg, '-y', '-i', video, '-ss', TIMESTAMPS[1][0], '-to', TIMESTAMPS[1][1],
                            '-c', 'copy', '-avoid_negative_ts', 'make_zero', video_output_names[1]]
 
+        # Execute ffmpeg commands to trim the video
         subprocess.run(ffmpeg_command1, check=True)
         subprocess.run(ffmpeg_command2, check=True)
 
+        # Log that video trimming is complete
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' video trimmed!\n')
         joblog.close()
 
+        # Define working folder for video processing
         work_folder = '/work/ReiterU/temp_videos/' + video.split('/')[-1].split('.')[0] + '/'
         os.makedirs(work_folder, exist_ok=True)
 

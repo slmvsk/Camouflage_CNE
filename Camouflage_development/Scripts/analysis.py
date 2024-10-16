@@ -154,11 +154,14 @@ for video in ALL_VIDEOS:
         os.makedirs(work_folder, exist_ok=True)
 
 
-        ######## DETECTION AND WARPING #######
+                ######## DETECTION AND WARPING #######
 
+        # Opening a job log file to track the process
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' setting up detectron model...\n')
         joblog.close()
+
+        # Importing necessary libraries and modules for object detection and transformation
         import os
         import cv2
         import numpy as np
@@ -177,152 +180,179 @@ for video in ALL_VIDEOS:
         import torch
         import pickle
 
-
+        # Logging that all imports have been successfully done
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' imports done!\n')
         joblog.close()
 
+        # Dictionary mapping camera numbers to specific models for detection
+        DETECTRON_DICT = {
+            'cam1':'development1',
+            'cam0':'development2',
+            'cam5':'development3',
+            'cam4':'development4',
+            'cam2':'development5',
+            'cam3':'development6'
+        }
 
-        # determining which detectron model to use
-
-        DETECTRON_DICT = {'cam1':'development1',
-                          'cam0':'development2',
-                          'cam5':'development3',
-                          'cam4':'development4',
-                          'cam2':'development5',
-                          'cam3':'development6'}
-
-
-
-
+        # Extract the camera number from the video file name
         if '/' in video:
             camera_number = video.split('/')[-1][:4]
         else:
             camera_number = video[:4]
 
+        # Assign the detectron model based on the camera number
         detectron_model = DETECTRON_DICT[camera_number]
+
+        # Logging that the model has been detected
         joblog = open(logpath, 'a')
         joblog.write(str(datetime.datetime.now()) + ' model detected!\n')
         joblog.close()  
 
+        # Configuration for the detectron model
         cfg = get_cfg()
+
+        # Merging with the base configuration file
         cfg.merge_from_file("/apps/unit/ReiterU/olivier/detectron2Configs/COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_3x.yaml")
+
+        # Setting output directory to the model-specific folder
         cfg.OUTPUT_DIR = '/apps/unit/ReiterU/olivier/trained_models/' + detectron_model + '/output'
+
+        # Setting the number of workers for the data loader
         cfg.DATALOADER.NUM_WORKERS = 4
+
+        # Number of object classes in the model (e.g., 2 for binary classification)
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = 2
+
+        # Load the model weights (pre-trained) from the specified path
         cfg.MODEL.WEIGHTS = os.path.join(cfg.OUTPUT_DIR, "model_final.pth")
+
+        # Set the threshold for object detection; higher threshold means more confident detections
         cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = 0.9
 
+        # Initialize the predictor (a wrapper for the model) with the given configuration
         predictor = DefaultPredictor(cfg)
-        currDataset_name= str(uuid1()) #dummy
-        segmentation_titles=['cuttlefish']
-        meta=MetadataCatalog.get(currDataset_name + '_train').set(thing_classes=segmentation_titles)
 
+        # Create a dummy dataset name using UUID and set up metadata for the segmentation
+        currDataset_name = str(uuid1()) # Dummy dataset name
+        segmentation_titles = ['cuttlefish'] # List of class names
+        meta = MetadataCatalog.get(currDataset_name + '_train').set(thing_classes=segmentation_titles)
 
+        # Log that the detectron model setup is complete
         joblog = open(logpath, 'a')
-        joblog.write(str(datetime.datetime.now()) + ' detectron model set-up !\n')
+        joblog.write(str(datetime.datetime.now()) + ' detectron model set-up!\n')
         joblog.close()
 
-
-
-        def estimateAffine(src_mask,trg_mask,mode='similarity'):
+        # Function to estimate the affine transformation between two masks
+        def estimateAffine(src_mask, trg_mask, mode='similarity'):
+            # Find contours (outlines) of the source and target masks
             cnts, _ = cv2.findContours(src_mask.astype('uint8'), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2:]
-            src_ellipse = cv2.fitEllipse(cnts[0])
+            src_ellipse = cv2.fitEllipse(cnts[0])  # Fit an ellipse to the source mask
             cnts, _ = cv2.findContours(trg_mask.astype('uint8'), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[-2:]
-            trg_ellipse = cv2.fitEllipse(cnts[0])
+            trg_ellipse = cv2.fitEllipse(cnts[0])  # Fit an ellipse to the target mask
+
+            # Calculate the rotation between the ellipses (in radians)
             rotation = (src_ellipse[2] - trg_ellipse[2]) / 180. * np.pi
+
+            # Determine the scaling based on the specified mode (rotation, similarity, or full affine)
             if mode == 'rotation':
-                scale_x = scale_y = 1
+                scale_x = scale_y = 1  # No scaling, only rotation
             elif mode == 'similarity':
-                scale_x = scale_y = (trg_ellipse[1][0] / src_ellipse[1][0] \
-                        + trg_ellipse[1][1] / src_ellipse[1][1]) / 2
+                # Scale uniformly (average scaling factor between both axes)
+                scale_x = scale_y = (trg_ellipse[1][0] / src_ellipse[1][0] + trg_ellipse[1][1] / src_ellipse[1][1]) / 2
             elif mode == 'full':
+                # Independent scaling for x and y axes
                 scale_x = trg_ellipse[1][0] / src_ellipse[1][0]
                 scale_y = trg_ellipse[1][1] / src_ellipse[1][1]
             else:
-                raise RuntimeError('mode %s not in ' \
-                        '[\'rotation\', \'similarity\', \'full\']' % mode)
+                raise RuntimeError('mode %s not in [\'rotation\', \'similarity\', \'full\']' % mode)
+
+            # Calculate the shift between the centroids of the two ellipses
             shift_src = src_ellipse[0]
             shift_trg = trg_ellipse[0]
 
-            # Compute transformation matrices
+            # Compute the transformation matrix t0 for the affine transformation
             alpha = scale_x * np.cos(rotation)
             beta = scale_y * np.sin(rotation)
-            t0 = np.array([[+alpha, +beta,   (1. - alpha) * shift_src[0] \
-                                                   - beta * shift_src[1] \
-                                           + shift_trg[0] - shift_src[0]], \
-                           [-beta, +alpha,           beta * shift_src[0] \
-                                           + (1. - alpha) * shift_src[1] \
-                                           + shift_trg[1] - shift_src[1]]], 'float32')
+            t0 = np.array([
+                [+alpha, +beta, (1. - alpha) * shift_src[0] - beta * shift_src[1] + shift_trg[0] - shift_src[0]],
+                [-beta, +alpha, beta * shift_src[0] + (1. - alpha) * shift_src[1] + shift_trg[1] - shift_src[1]]
+            ], 'float32')
 
+            # Compute a second transformation matrix t1 (with a 180-degree phase shift)
             alpha = scale_x * np.cos(np.pi + rotation)
             beta = scale_y * np.sin(np.pi + rotation)
-            t1 = np.array([[+alpha, +beta,   (1. - alpha) * shift_src[0] \
-                                                   - beta * shift_src[1] \
-                                           + shift_trg[0] - shift_src[0]], \
-                           [-beta, +alpha,           beta * shift_src[0] \
-                                           + (1. - alpha) * shift_src[1] \
-                                           + shift_trg[1] - shift_src[1]]], 'float32')
+            t1 = np.array([
+                [+alpha, +beta, (1. - alpha) * shift_src[0] - beta * shift_src[1] + shift_trg[0] - shift_src[0]],
+                [-beta, +alpha, beta * shift_src[0] + (1. - alpha) * shift_src[1] + shift_trg[1] - shift_src[1]]
+            ], 'float32')
 
-            return t0, t1
+            return t0, t1  # Return the two possible affine transformation matrices
 
 
-
+        # Function to create a log file for a given dataset
         def create_log_file(dataset_name, work_folder):
             import datetime
-            logfilename = work_folder + dataset_name + '.log'
-            logfile = open(logfilename, 'w')
-            logfile.write('--------LOG OF DATASET {} CREATED AT {}-------- \n\n\n'.format(dataset_name, datetime.datetime.now()))
-            logfile.close()
-            return logfilename
+            logfilename = work_folder + dataset_name + '.log'  # Log file path
+            logfile = open(logfilename, 'w')  # Open the log file in write mode
+            logfile.write('--------LOG OF DATASET {} CREATED AT {}-------- \n\n\n'.format(dataset_name, datetime.datetime.now()))  # Write the log header
+            logfile.close()  # Close the file
+            return logfilename  # Return the log file name
 
+        # Function to divide a video into smaller slices
         def divide_video(source_video, start_frame, stop_frame, step_frame, num_workers, dataset_name, work_folder):
-
+            
+            # Import the FFMPEG tool from moviepy to handle video slicing
             from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
-
-
-
+            
+            # If stop_frame is -1, find the total number of frames in the video
             if stop_frame == -1:
-                cap = cv2.VideoCapture(source_video)
-                stop_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-                cap.release()
+                cap = cv2.VideoCapture(source_video)  # Open the video
+                stop_frame = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))  # Get the total frame count
+                cap.release()  # Release the video capture object
 
+            # Define slices: calculate the number of frames to divide among workers
+            num_frames = stop_frame - start_frame - (num_workers * step_frame)  # Number of frames excluding safety seconds
+            len_slice = int(np.floor(num_frames / num_workers))  # Length of each slice
 
-            # define slices
-            num_frames = stop_frame - start_frame - (num_workers * step_frame) # safety seconds
-            len_slice = int(np.floor(num_frames / num_workers))
-
+            # Adjust length to ensure contiguous dataset
             leftover = len_slice % step_frame
-            len_slice = len_slice - leftover # this is to ensure to end up with contiguous dataset
+            len_slice = len_slice - leftover
 
+            # Create a list to store start and stop frames for each slice
             slices = list()
             start = start_frame
             stop = start + len_slice
-            slices.append((start, stop))
+            slices.append((start, stop))  # Append the first slice
+
+            # Create additional slices for the remaining workers
             for k in range(num_workers - 1):
                 start = stop + step_frame
                 stop = start + len_slice
-                slices.append((start,stop))
+                slices.append((start, stop))
 
-
-            # slice the video
-            VIDEOS = list()
-            LOGS = list()
+            # Slice the video and create logs for each slice
+            VIDEOS = list()  # List to store the output video slice names
+            LOGS = list()  # List to store the log file names
             for start, stop in slices:
-                slice_name = "{}_{}-{}.mp4".format(dataset_name, start, stop) #warped_trim1_123-456.mp4
-                file_name = work_folder + slice_name # /work/ReiterU/temp_videos/camXXXXXXXXXXXX/warp_trim1-123-456.mp4
-                ffmpeg_extract_subclip(source_video, start/23, stop/23, file_name) # function take time as sec, FPS is usually 23
-                log_filename = create_log_file(slice_name, work_folder)
+                # Define the output file name based on the dataset name and frame range
+                slice_name = "{}_{}-{}.mp4".format(dataset_name, start, stop)
+                file_name = work_folder + slice_name  # Complete path for the sliced video
+                # Extract the subclip (ffmpeg requires time in seconds; FPS assumed to be 23)
+                ffmpeg_extract_subclip(source_video, start / 23, stop / 23, file_name)
+                log_filename = create_log_file(slice_name, work_folder)  # Create log for the slice
 
+                # Append the video file name and log file to respective lists
                 VIDEOS.append(file_name)
                 LOGS.append(log_filename)
 
-
+            # Return the slices, video file paths, and log file paths
             return slices, VIDEOS, LOGS
 
-
+        # Function to process the video and apply warp transformations
         def run_through_video2(video, work_folder, logfilename, warp_params, start_frame, stop_frame, step_frame):
-
+            
+            # Extract warp parameters from the provided dictionary
             refmask = warp_params['refMask']
             src_mask = warp_params['refMask']
             resizedMask = warp_params['resizedMask']
@@ -332,197 +362,173 @@ for video in ALL_VIDEOS:
             maskRotated = warp_params['maskRotated']
             invMaskRotated = warp_params['invMaskRotated']
             maskCrop = warp_params['maskCrop']
-            (h,w) = warp_params['heightWidth']
+            (h, w) = warp_params['heightWidth']
 
-
-            #start_frame = int(video.split('-')[0].split('_')[-1]) # /work/ReiterU/temp_videos/camXXXXXXXXXXXX/warp_trim1_123-456.mp4
-            #stop_frame = int(video.split('-')[-1].split('.')[0])
-            print(start_frame, stop_frame, step_frame)
-
-
-
-
-            #setup output file
-            video_suffix = video.split('/')[-1].split('.')[0]  #/work/ReiterU/temp_videos/camXXXXXXXXXXXX/warp_trim1_123-456.mp4 -> warp_trim1-123-456
-            video_suffix2 = video.split('/')[-2]
+            # Setup output file name
+            video_suffix = video.split('/')[-1].split('.')[0]  # Get the video suffix (e.g., 'warp_trim1_123-456')
+            video_suffix2 = video.split('/')[-2]  # Get the parent folder name
+            # Create the HDF5 file path for storing the processed data
             output_filename = work_folder + '{}_data_{}-{}.h5'.format(video_suffix2, video_suffix, start_frame, stop_frame)
-            num_frames = len(np.arange(start_frame, stop_frame, step_frame))
+            num_frames = len(np.arange(start_frame, stop_frame, step_frame))  # Calculate the number of frames to process
 
+            # Create the HDF5 file and datasets for storing patterns, masks, and positions
             pattern_file = h5py.File(output_filename, 'w')
-            pattern_dset1 = pattern_file.create_dataset('patterns1', \
-                        shape=[num_frames*8,h,w,3], \
-                        dtype='uint8')
-            pattern_dset2 = pattern_file.create_dataset('patterns2', \
-                        shape=[num_frames*8,h,w,3], \
-                        dtype='uint8')
-            pattern_file.create_dataset('mask', \
-                        data=resizedMask, \
-                        dtype='bool')
-            pos_dset = pattern_file.create_dataset('positions', \
-                    shape = [num_frames*8, 2], \
-                    dtype = 'float32')
-            instance_idx = pattern_file.create_dataset('instance', \
-                                                      shape = [num_frames*8],
-                                                      dtype='uint8')
-            pattern_file.attrs.create('scale_percent',scale_percent, \
-                                dtype='uint32')
-            pattern_file.attrs.create('startFrame',start_frame, \
-                                dtype='uint32')
-            pattern_file.attrs.create('video', \
-                    video, \
-                    dtype=h5py.special_dtype(vlen=str))
+            pattern_dset1 = pattern_file.create_dataset('patterns1', shape=[num_frames * 8, h, w, 3], dtype='uint8')
+            pattern_dset2 = pattern_file.create_dataset('patterns2', shape=[num_frames * 8, h, w, 3], dtype='uint8')
+            pattern_file.create_dataset('mask', data=resizedMask, dtype='bool')
+            pos_dset = pattern_file.create_dataset('positions', shape=[num_frames * 8, 2], dtype='float32')
+            instance_idx = pattern_file.create_dataset('instance', shape=[num_frames * 8], dtype='uint8')
+            # Store some additional attributes like scaling percentage, start frame, and video name
+            pattern_file.attrs.create('scale_percent', scale_percent, dtype='uint32')
+            pattern_file.attrs.create('startFrame', start_frame, dtype='uint32')
+            pattern_file.attrs.create('video', video, dtype=h5py.special_dtype(vlen=str))
 
-            instance_idx[:] = 0
+            instance_idx[:] = 0  # Initialize the instance index to zero
 
-            #run through video
-            goodRun=1
-            cap = cv2.VideoCapture(video)
-            print(video, logfilename)
-            logfile = open(logfilename, 'a')
-            frames_to_process = np.arange(0, stop_frame - start_frame, step_frame)
-            print(frames_to_process)
-            N = 0 
-            for frame in tqdm(frames_to_process, total=len(frames_to_process)): #length
+            # Process the video frame by frame
+            goodRun = 1  # Flag to track if the video processing goes well
+            cap = cv2.VideoCapture(video)  # Open the video
+            logfile = open(logfilename, 'a')  # Open the log file for writing
+            frames_to_process = np.arange(0, stop_frame - start_frame, step_frame)  # Define frames to process
+            N = 0  # Initialize frame counter
+            for frame in tqdm(frames_to_process, total=len(frames_to_process)):  # Process each frame
+                
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame)  # Set video to the current frame
+                succ, img = cap.read()  # Read the frame
 
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame)
-                succ, img = cap.read() 
-
-                if (succ) and (True):
-                    outputs = predictor(img)
-                    N_MASKS = len(outputs["instances"].pred_masks)
-                    if N_MASKS == 0:   #it will use the previous mask in this case
-
+                # If frame was read successfully
+                if succ:
+                    outputs = predictor(img)  # Perform detection on the frame
+                    N_MASKS = len(outputs["instances"].pred_masks)  # Get the number of detected masks
+                    if N_MASKS == 0:  # If no masks were detected, log the issue
                         logfile = open(logfilename, 'a')
                         logfile.write('no masks detected on frame ' + str(frame + start_frame) + '!\n')
                         logfile.close()
-
                     else:
+                        # For each detected instance, apply the warp transformations
                         for INST in range(N_MASKS):
-
                             try:
-                                mask=np.array(outputs["instances"].pred_masks[INST].to("cpu"))
+                                mask = np.array(outputs["instances"].pred_masks[INST].to("cpu"))  # Extract the mask
 
-                                mask_coos = np.where(mask)
-                                xpos = mask_coos[1].mean()
-                                ypos = mask_coos[0].mean()
+                                mask_coos = np.where(mask)  # Get coordinates of mask pixels
+                                xpos = mask_coos[1].mean()  # Calculate the mean x position
+                                ypos = mask_coos[0].mean()  # Calculate the mean y position
 
-
+                                # Estimate the affine transformation matrices
                                 t0, t1 = estimateAffine(src_mask, mask)
 
+                                # Apply the first affine transformation
                                 t_inv0 = cv2.invertAffineTransform(t0)
                                 img1 = cv2.warpAffine(img, t_inv0, src_mask.shape[1::-1])
-                                resized = cv2.resize(img1, dim, interpolation = cv2.INTER_AREA)
-                                resized=ndimage.rotate(resized, rotation)*maskRotated+1
-                                resized=resized*invMaskRotated-1
-                                embeddingData=np.array(resized[maskCrop[0]:maskCrop[1],maskCrop[2]:maskCrop[3]])
-                                pattern_dset1[N]=embeddingData[:,:,::-1] #back to rgb
+                                resized = cv2.resize(img1, dim, interpolation=cv2.INTER_AREA)
+                                resized = ndimage.rotate(resized, rotation) * maskRotated + 1
+                                resized = resized * invMaskRotated - 1
+                                embeddingData = np.array(resized[maskCrop[0]:maskCrop[1], maskCrop[2]:maskCrop[3]])
+                                pattern_dset1[N] = embeddingData[:, :, ::-1]  # Store the RGB pattern
 
-
+                                # Apply the second affine transformation
                                 t_inv1 = cv2.invertAffineTransform(t1)
                                 img2 = cv2.warpAffine(img, t_inv1, src_mask.shape[1::-1])
-                                resized = cv2.resize(img2, dim, interpolation = cv2.INTER_AREA)
-                                resized=ndimage.rotate(resized, rotation)*maskRotated+1
-                                resized=resized*invMaskRotated-1
-                                embeddingData=np.array(resized[maskCrop[0]:maskCrop[1],maskCrop[2]:maskCrop[3]])
-                                pattern_dset2[N]=embeddingData[:,:,::-1] #back to rgb
+                                resized = cv2.resize(img2, dim, interpolation=cv2.INTER_AREA)
+                                resized = ndimage.rotate(resized, rotation) * maskRotated + 1
+                                resized = resized * invMaskRotated - 1
+                                embeddingData = np.array(resized[maskCrop[0]:maskCrop[1], maskCrop[2]:maskCrop[3]])
+                                pattern_dset2[N] = embeddingData[:, :, ::-1]  # Store the RGB pattern
 
+                                pos_dset[N, :] = np.array([xpos, ypos])  # Store the mask position
+                                instance_idx[N] = INST + 1  # Update the instance index
 
-                                pos_dset[N,:] = np.array([xpos, ypos])
-                                instance_idx[N] = INST + 1
-
-                                N += 1
+                                N += 1  # Increment frame counter
+                                # Log successful warping of the mask
                                 logfile = open(logfilename, 'a')
-                                logfile.write('warping of mask ' + str(INST) +  ' succedeedon frame' + str(frame) + '\n')
+                                logfile.write('warping of mask ' + str(INST) + ' succeeded on frame ' + str(frame) + '\n')
                                 logfile.close()
 
-                            except Exception as e:
-                                logfile = open(logfilename, 'a')
-                                logfile.write('warping of mask ' + str(INST) +  ' failed on frame' + str(frame) + '\n')
-                                logfile.write(str(e) + '\n')
-                                logfile.close()
+                            except Exception as e:  # If an error occurs during mask warping
+                                logfile = open(logfilename, 'a')  # Open the log file to append error details
+                                logfile.write('warping of mask ' + str(INST) +  ' failed on frame ' + str(frame) + '\n')  # Log the failure
+                                logfile.write(str(e) + '\n')  # Log the exception message
+                                logfile.close()  # Close the log file
 
-
-
+                # If frame could not be read (succ is False)
                 elif not succ:
-                    logfile = open(logfilename, 'a')
-                    logfile.write('something wrong on frame ' + str(frame) + '\n')
-                    logfile.close()
-                    goodRun=0
+                    logfile = open(logfilename, 'a')  # Open the log file to append error
+                    logfile.write('something wrong on frame ' + str(frame) + '\n')  # Log the frame failure
+                    logfile.close()  # Close the log file
+                    goodRun = 0  # Mark the run as unsuccessful
 
-                else:
-                    if not succ:
-                        logfile = open(logfilename, 'a')
-                        logfile.write('frame #{} was not included because cap not succ \n'.format(frame))
-                        logfile.close()
-                    else:
-                        logfile = open(logfilename, 'a')
-                        logfile.write('frame #{} was not included because as expected \n'.format(frame))
-                        logfile.close()
-                    pass
+                else:  # This branch seems unreachable but is handled as a fallback
+                    if not succ:  # If succ is False (again)
+                        logfile = open(logfilename, 'a')  # Open the log file to log the failure
+                        logfile.write('frame #{} was not included because cap not succ \n'.format(frame))  # Log the issue
+                        logfile.close()  # Close the log file
+                    else:  # If succ is True but the frame wasn't processed as expected
+                        logfile = open(logfilename, 'a')  # Open the log file
+                        logfile.write('frame #{} was not included because as expected \n'.format(frame))  # Log the frame exclusion
+                        logfile.close()  # Close the log file
+                    pass  # Continue with the next frame
 
+            logfile.close()  # Close the log file at the end of processing
+            cap.release()  # Release the video capture object
+            pattern_file.close()  # Close the HDF5 file
+            return True  # Indicate successful processing
 
+        # Variables for dataset processing
+        dataset_name = "warped_dark"  # Name of the dataset being processed
+        num_workers = 4  # Number of parallel workers for processing
+        start_frame = 0  # Starting frame for the video
+        stop_frame = -1  # Use all frames in the video if stop_frame is -1
+        step_frame = 690  # Step frame interval for frame sampling
 
-            logfile.close()
-            cap.release()    
-            pattern_file.close()
-            return True
-
-
-
-
-
-        dataset_name = "warped_dark"
-        num_workers = 4
-        start_frame = 0
-        stop_frame = -1
-        step_frame = 690
-
-
-
-
-
-
+        # Importing necessary modules for parallel processing and handling video metadata
         from joblib import Parallel, delayed
         import pickle
 
+        # Load the warp parameters from a pickle file
         with open('/apps/unit/ReiterU/olivier/temp/warp_params.pickle', 'rb') as f:
             warp_params = pickle.load(f)
 
+        # Define the list of videos to be processed
+        # work_folder = '/work/ReiterU/temp_videos/'
+        videolist = video_output_names  # List of videos to process
 
-        #work_folder = '/work/ReiterU/temp_videos/'
-        videolist = video_output_names
-
-
+        # Loop through each video in the videolist and process it
         for source_video in videolist:
-
+            
+            # Log the start of processing for the video
             joblog = open(logpath, 'a')
             joblog.write(str(datetime.datetime.now()) + ' processing video... {} \n'.format(source_video))
             joblog.close()
-            video_suffix = "_" + source_video.split("_")[-1].split('.')[0] # _trim1
-            slices, videos, logs = divide_video(source_video, start_frame, stop_frame,\
-                                                step_frame, num_workers, dataset_name+video_suffix, work_folder)
-                                           #warped_trim1
-            validations = Parallel(n_jobs=num_workers)(delayed(run_through_video2)(vid, work_folder, log, warp_params, Slice[0], Slice[1], step_frame)\
+
+            # Define the suffix for the video based on its name
+            video_suffix = "_" + source_video.split("_")[-1].split('.')[0]  # Extract suffix (e.g., _trim1)
+            # Divide the video into slices and get the corresponding logs
+            slices, videos, logs = divide_video(source_video, start_frame, stop_frame, step_frame, num_workers, dataset_name + video_suffix, work_folder)
+            
+            # Parallel execution of video processing on multiple workers
+            validations = Parallel(n_jobs=num_workers)(delayed(run_through_video2)(vid, work_folder, log, warp_params, Slice[0], Slice[1], step_frame)
                                              for (Slice, vid, log) in zip(slices, videos, logs))
 
+            # Log the completion of video processing
             joblog = open(logpath, 'a')                               
             joblog.write(str(datetime.datetime.now()) + ' {} processing done!\n'.format(source_video))
-            joblog.write(str(datetime.datetime.now()) + ' cleaning up subvideos...\n')
+            joblog.write(str(datetime.datetime.now()) + ' cleaning up subvideos...\n')  # Log cleanup start
             joblog.close()
 
+            # Remove the temporary subvideos after processing
             for v in videos:
-                subprocess.run(['rm', v], check=True)
+                subprocess.run(['rm', v], check=True)  # Delete each video file
 
+            # Log the completion of cleanup
             joblog = open(logpath, 'a')
             joblog.write(str(datetime.datetime.now()) + ' cleaning up subvideos finished!\n')
             joblog.close()
 
-
+        # After processing all videos, remove the original videos from the videolist
         for v in videolist:
-            subprocess.run(['rm', v], check=True)
-    except:
-        joblog = open(logpath, 'a')
-        joblog.write('processing failed on video {}, check joblog or slurm output'.format(video))
+            subprocess.run(['rm', v], check=True)  # Delete the original video files
 
-
-
+    except:  # General exception handling for the entire block
+        joblog = open(logpath, 'a')  # Open the log file
+        joblog.write('processing failed on video {}, check joblog or slurm output'.format(video))  # Log the failure
+        joblog.close()  # Close the log file

@@ -363,6 +363,11 @@ for video in ALL_VIDEOS:
             invMaskRotated = warp_params['invMaskRotated']
             maskCrop = warp_params['maskCrop']
             (h, w) = warp_params['heightWidth']
+            
+            #start_frame = int(video.split('-')[0].split('_')[-1]) # /work/ReiterU/temp_videos/camXXXXXXXXXXXX/warp_trim1_123-456.mp4
+            #stop_frame = int(video.split('-')[-1].split('.')[0])
+            print(start_frame, stop_frame, step_frame)
+
 
             # Setup output file name
             video_suffix = video.split('/')[-1].split('.')[0]  # Get the video suffix (e.g., 'warp_trim1_123-456')
